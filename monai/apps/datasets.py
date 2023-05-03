@@ -40,8 +40,208 @@ from monai.data import (
 from monai.transforms import LoadImaged, Randomizable
 from monai.utils import ensure_tuple
 
-__all__ = ["MedNISTDataset", "DecathlonDataset", "CrossValidation", "TciaDataset"]
+from monai.utils import optional_import
+medigan, _ = optional_import(module="medigan", version="1.0.0")
+from medigan import Generators
 
+__all__ = ["MediganDataset", "MedNISTDataset", "DecathlonDataset", "CrossValidation", "TciaDataset"]
+
+class MediganDataset(Randomizable, CacheDataset):
+    """
+    The Dataset to automatically download MedNIST data and generate items for training, validation or test.
+    It's based on `CacheDataset` to accelerate the training process.
+
+    Args:
+        root_dir: target directory to download and load MedNIST dataset.
+        section: expected data section, can be: `training`, `validation` or `test`.
+        transform: transforms to execute operations on input data.
+        download: whether to download and extract the MedNIST from resource link, default is False.
+            if expected file already exists, skip downloading even set it to True.
+            user can manually copy `MedNIST.tar.gz` file or `MedNIST` folder to root directory.
+        seed: random seed to randomly split training, validation and test datasets, default is 0.
+        val_frac: percentage of validation fraction in the whole dataset, default is 0.1.
+        test_frac: percentage of test fraction in the whole dataset, default is 0.1.
+        cache_num: number of items to be cached. Default is `sys.maxsize`.
+            will take the minimum of (cache_num, data_length x cache_rate, data_length).
+        cache_rate: percentage of cached data in total, default is 1.0 (cache all).
+            will take the minimum of (cache_num, data_length x cache_rate, data_length).
+        num_workers: the number of worker threads if computing cache in the initialization.
+            If num_workers is None then the number returned by os.cpu_count() is used.
+            If a value less than 1 is specified, 1 will be used instead.
+        progress: whether to display a progress bar when downloading dataset and computing the transform cache content.
+        copy_cache: whether to `deepcopy` the cache content before applying the random transforms,
+            default to `True`. if the random transforms don't modify the cached content
+            (for example, randomly crop from the cached image and deepcopy the crop region)
+            or if every cache item is only used once in a `multi-processing` environment,
+            may set `copy=False` for better performance.
+        as_contiguous: whether to convert the cached NumPy array or PyTorch tensor to be contiguous.
+            it may help improve the performance of following logic.
+        runtime_cache: whether to compute cache at the runtime, default to `False` to prepare
+            the cache content at initialization. See: :py:class:`monai.data.CacheDataset`.
+
+    Raises:
+        ValueError: When ``root_dir`` is not a directory.
+        RuntimeError: When ``dataset_dir`` doesn't exist and downloading is not selected (``download=False``).
+
+    """
+
+
+    def __init__(
+        self,
+        root_dir: PathLike,
+        model_id: str,
+        num_samples: int,
+        transform: Sequence[Callable] | Callable = (),
+        input_dir: PathLike = None, # img2img translation
+        batch_size: int = 16,
+        install_dependencies: bool =True,
+        cache_num: int = sys.maxsize,
+        cache_rate: float = 1.0,
+        num_workers: int | None = 1,
+        progress: bool = True,
+        copy_cache: bool = True,
+        as_contiguous: bool = True,
+        runtime_cache: bool = False,
+        **kwargs,
+    ) -> None:
+
+        dataset_dir = self._create_dirs(root_dir=root_dir)
+        trainset = None
+        trainloader = torch.utils.data.DataLoader(trainset, batch_size=4, shuffle=True, num_workers=2)
+
+        len(trainloader)
+        # Adding the input_dir to **kwargs to allow the generative model to translate images in that input_dir
+        if input_dir is not None: kwargs['input_dir'] = input_dir
+
+        self._generate(model_id=model_id, num_samples=num_samples, batch_size=batch_size, dataset_dir=dataset_dir, install_dependencies=install_dependencies, **kwargs)
+        sys.exit("This did wok until here.")
+
+        # TODO Test until here
+
+        # TODO find the dictionary structure returned by the model
+            # only images, images + labels, images + masks, etc
+            # TODO: Do we need in medigan a constant that tells us a model's returned data structure we should use here (e.g. img, img, mask, etc)?
+
+        # TODO Assert if at least num_samples amount of data is inside the dataset_dir <- Move to unit test
+
+        # Get data list OR maybe it is better to directly get torch as torch dataset
+        data = self._generate_data_list(dataset_dir)
+
+        if transform == ():
+            transform = LoadImaged("image")
+
+        # TODO Input data in CacheDataset
+        CacheDataset.__init__(
+            self,
+            data=data,
+            transform=transform,
+            cache_num=cache_num,
+            cache_rate=cache_rate,
+            num_workers=num_workers,
+            progress=progress,
+            copy_cache=copy_cache,
+            as_contiguous=as_contiguous,
+            runtime_cache=runtime_cache,
+        )
+
+    def _create_dirs(self, root_dir) -> Path:
+        # Create dir where data will be stored
+        root_dir = Path(root_dir)
+        if not root_dir.is_dir():
+            raise ValueError("Root directory root_dir must be a directory.")
+
+        # Get dataset name on disk
+        dataset_dir = root_dir / self.dataset_folder_name
+
+        # Check if dataset dir was created correctly
+        if not dataset_dir.is_dir():
+            raise RuntimeError(
+                f"Cannot find dataset directory: {dataset_dir}, please use download=True to download it."
+            )
+        return dataset_dir
+
+
+    def _generate(model_id,
+                 num_samples,
+                 batch_size,
+                 dataset_dir,
+                 install_dependencies,
+                 **kwargs,
+                 ):
+        generators = Generators()
+        generators.generate(model_id=model_id, num_samples=num_samples, output_path=dataset_dir, save_images=True, batch_size=batch_size, install_dependencies=install_dependencies, **kwargs,)
+
+    def _generate_data_list(self, dataset_dir: PathLike) -> list[dict]:
+        """
+        Identify the generated output modalities (e.g., imgs, labels, masks) that are present. Create respective dataset list object
+
+        Raises:
+            ValueError: When ``section`` is not one of ["training", "validation", "test"].
+
+        """
+        dataset_dir = Path(dataset_dir)
+        class_names = sorted(f"{x.name}" for x in dataset_dir.iterdir() if x.is_dir())  # folder name as the class name
+        self.num_class = len(class_names)
+        image_files = [[f"{x}" for x in (dataset_dir / class_names[i]).iterdir()] for i in range(self.num_class)]
+        num_each = [len(image_files[i]) for i in range(self.num_class)]
+        image_files_list = []
+        image_class = []
+        class_name = []
+        for i in range(self.num_class):
+            image_files_list.extend(image_files[i])
+            image_class.extend([i] * num_each[i])
+            class_name.extend([class_names[i]] * num_each[i])
+
+        length = len(image_files_list)
+        indices = np.arange(length)
+        self.randomize(indices)
+
+        test_length = int(length * self.test_frac)
+        val_length = int(length * self.val_frac)
+        if self.section == "test":
+            section_indices = indices[:test_length]
+        elif self.section == "validation":
+            section_indices = indices[test_length : test_length + val_length]
+        elif self.section == "training":
+            section_indices = indices[test_length + val_length :]
+        else:
+            raise ValueError(
+                f'Unsupported section: {self.section}, available options are ["training", "validation", "test"].'
+            )
+        # the types of label and class name should be compatible with the pytorch dataloader
+        return [
+            {"image": image_files_list[i], "label": image_class[i], "class_name": class_name[i]}
+            for i in section_indices
+        ]
+
+
+    def randomize(self, data: np.ndarray) -> None:
+        self.R.shuffle(data)
+
+
+    def get_num_classes(self) -> int:
+        """Get number of classes."""
+        return self.num_class
+
+
+    def get_num_samples(self) -> int:
+        """Get number of classes."""
+        pass
+        return self.num_class # TODO
+
+
+    # TODO get properties (i.e. keys in the returned list)
+    def get_properties(self, keys: Sequence[str] | str | None = None) -> dict:
+        """
+        Get the loaded properties of dataset with specified keys.
+        If no keys specified, return all the loaded properties.
+
+        """
+        if keys is None:
+            return self._properties
+        if self._properties is not None:
+            return {key: self._properties[key] for key in ensure_tuple(keys)}
+        return {}
 
 class MedNISTDataset(Randomizable, CacheDataset):
     """
