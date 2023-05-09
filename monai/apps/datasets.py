@@ -105,16 +105,16 @@ class MediganDataset(Randomizable, CacheDataset):
         **kwargs,
     ) -> None:
 
+        self.model_id = model_id
         dataset_dir = self._create_dirs(root_dir=root_dir)
         trainset = None
-        trainloader = torch.utils.data.DataLoader(trainset, batch_size=4, shuffle=True, num_workers=2)
+        # trainloader = torch.utils.data.DataLoader(trainset, batch_size=4, shuffle=True, num_workers=2)
 
-        len(trainloader)
+        # len(trainloader)
         # Adding the input_dir to **kwargs to allow the generative model to translate images in that input_dir
         if input_dir is not None: kwargs['input_dir'] = input_dir
 
         self._generate(model_id=model_id, num_samples=num_samples, batch_size=batch_size, dataset_dir=dataset_dir, install_dependencies=install_dependencies, **kwargs)
-        sys.exit("This did wok until here.")
 
         # TODO Test until here
 
@@ -126,7 +126,6 @@ class MediganDataset(Randomizable, CacheDataset):
 
         # Get data list OR maybe it is better to directly get torch as torch dataset
         data = self._generate_data_list(dataset_dir)
-
         if transform == ():
             transform = LoadImaged("image")
 
@@ -151,17 +150,16 @@ class MediganDataset(Randomizable, CacheDataset):
             raise ValueError("Root directory root_dir must be a directory.")
 
         # Get dataset name on disk
-        dataset_dir = root_dir / self.dataset_folder_name
+        dataset_dir = root_dir / self.model_id
 
         # Check if dataset dir was created correctly
         if not dataset_dir.is_dir():
-            raise RuntimeError(
-                f"Cannot find dataset directory: {dataset_dir}, please use download=True to download it."
-            )
+            os.mkdir(dataset_dir)
         return dataset_dir
 
 
-    def _generate(model_id,
+    def _generate(self,
+                 model_id,
                  num_samples,
                  batch_size,
                  dataset_dir,
@@ -179,39 +177,22 @@ class MediganDataset(Randomizable, CacheDataset):
             ValueError: When ``section`` is not one of ["training", "validation", "test"].
 
         """
+
+        # temporal solution with parsing image names for sample class determination
+        # will be much easier to have samples divided in directories but as far as I remember each model saves the data 
+        # with it's own structure
+
         dataset_dir = Path(dataset_dir)
-        class_names = sorted(f"{x.name}" for x in dataset_dir.iterdir() if x.is_dir())  # folder name as the class name
-        self.num_class = len(class_names)
-        image_files = [[f"{x}" for x in (dataset_dir / class_names[i]).iterdir()] for i in range(self.num_class)]
-        num_each = [len(image_files[i]) for i in range(self.num_class)]
-        image_files_list = []
-        image_class = []
-        class_name = []
-        for i in range(self.num_class):
-            image_files_list.extend(image_files[i])
-            image_class.extend([i] * num_each[i])
-            class_name.extend([class_names[i]] * num_each[i])
+        class_names = [f"{x.stem.split('_')[3]}" for x in dataset_dir.iterdir() if x.is_file()]  # file name the class name
+        # class_names = sorted(f"{x.name}" for x in dataset_dir.iterdir() if x.is_dir())  # folder name as the class name
+        labels = [0 if class_names[0] == class_name else 1 for class_name in class_names]
+        self.num_class = len(set(class_names))
+        image_files = [f"{x}" for x in dataset_dir.iterdir() if x.is_file()]
 
-        length = len(image_files_list)
-        indices = np.arange(length)
-        self.randomize(indices)
-
-        test_length = int(length * self.test_frac)
-        val_length = int(length * self.val_frac)
-        if self.section == "test":
-            section_indices = indices[:test_length]
-        elif self.section == "validation":
-            section_indices = indices[test_length : test_length + val_length]
-        elif self.section == "training":
-            section_indices = indices[test_length + val_length :]
-        else:
-            raise ValueError(
-                f'Unsupported section: {self.section}, available options are ["training", "validation", "test"].'
-            )
         # the types of label and class name should be compatible with the pytorch dataloader
         return [
-            {"image": image_files_list[i], "label": image_class[i], "class_name": class_name[i]}
-            for i in section_indices
+            {"image": image, "label": label, "class_name": class_name}
+            for image, label, class_name in zip(image_files, labels, class_names) 
         ]
 
 
