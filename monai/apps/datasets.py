@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import uuid
 import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -149,9 +150,10 @@ class MediganDataset(Randomizable, CacheDataset):
         if not root_dir.is_dir():
             raise ValueError("Root directory root_dir must be a directory.")
 
-        # Get dataset name on disk
-        dataset_dir = root_dir / self.model_id
-
+        # Get unique id for this generation run
+        generation_run_id = str(uuid.uuid4())
+        # Get dataset name on disks
+        dataset_dir = root_dir / (self.model_id + '_' + generation_run_id)
         # Check if dataset dir was created correctly
         if not dataset_dir.is_dir():
             os.mkdir(dataset_dir)
